@@ -1,9 +1,6 @@
 package io.summer.core;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -11,6 +8,8 @@ public class DefaultBeanFactory {
     private final Map<String, BeanDefinition> definitions = new ConcurrentHashMap<>();
     private final Map<String, Object> singletons = new ConcurrentHashMap<>();
     private final Injector injector;
+    private final Set<String> currentlyCreating = ConcurrentHashMap.newKeySet();
+
     public DefaultBeanFactory(Injector injector) {
         this.injector = injector;
         this.injector.setBeanFactory(this);
@@ -56,11 +55,22 @@ public class DefaultBeanFactory {
         if (definition == null) {
             throw new NoSuchBeanException(type);
         }
-        // 생성 중 표시용으로 먼저 null 넣을 수도 있지만,
-        // P1은 단순 순환이면 StackOverflow → 나중에 개선
-        Object instance = injector.createInstance(definition.getBeanClass());
-        singletons.put(name, instance);
-        return (T) instance;
+        if (!currentlyCreating.add(name)) {
+            throw new BeanCreationException(
+                    definition.getBeanClass(),
+                    new IllegalStateException(
+                            "Circular dependency detected while creating: " + name
+                                    + " (in-progress: " + currentlyCreating + ")"
+                    )
+            );
+        }
+        try {
+            Object instance = injector.createInstance(definition.getBeanClass());
+            singletons.put(name, instance);
+            return (T) instance;
+        } finally {
+            currentlyCreating.remove(name);
+        }
     }
     public Collection<Object> getBeans() {
         return new ArrayList<>(singletons.values());
