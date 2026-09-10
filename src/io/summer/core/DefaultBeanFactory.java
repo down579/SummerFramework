@@ -1,5 +1,7 @@
 package io.summer.core;
 
+import io.summer.annotation.Component;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -66,16 +68,33 @@ public class DefaultBeanFactory {
         }
         try {
             Object instance = injector.createInstance(definition.getBeanClass());
-            singletons.put(name, instance);
+            // 도전 옵션: 필드 순환을 일부 허용하려면 여기서 먼저 put
+            // singletons.put(name, instance);
+            injector.injectFieldsAndSetters(instance);
+            injector.invokePostConstruct(instance); // 선택
+            singletons.put(name, instance); // early put 안 했으면 여기서 저장
             return (T) instance;
         } finally {
             currentlyCreating.remove(name);
         }
     }
+    public Object getBean(String name) {
+        BeanDefinition definition = definitions.get(name);
+        if (definition == null) {
+            throw new SummerException("No bean named: " + name);
+        }
+        return getBean(name, definition.getBeanClass());
+    }
+
+
     public Collection<Object> getBeans() {
         return new ArrayList<>(singletons.values());
     }
     private String resolveBeanName(Class<?> beanClass) {
+        Component component = beanClass.getAnnotation(Component.class);
+        if (component != null && !component.value().isEmpty()) {
+            return component.value();
+        }
         String simple = beanClass.getSimpleName();
         return Character.toLowerCase(simple.charAt(0)) + simple.substring(1);
     }

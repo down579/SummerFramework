@@ -43,4 +43,11 @@ public class ApplicationContext {
     public DefaultBeanFactory getBeanFactory() {
         return beanFactory;
     }
+
+    public Object getBean(String name) {
+        return beanFactory.getBean(name);
+    }
+    public <T> T getBean(String name, Class<T> type) {
+        return beanFactory.getBean(name, type);
+    }
 }
