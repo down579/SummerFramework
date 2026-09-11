@@ -11,6 +11,7 @@ JDK 21 기준, 애노테이션 기반 **싱글톤** 빈 관리에 집중합니�
 | 2 | `@ComponentScan`, 순환 의존성 감지 | 완료 |
 | 3 | 필드/세터 주입, `@Qualifier`, `@PostConstruct`, `@Component` 이름 | 완료 |
 | 4 | `@Configuration`, `@Bean` (lite 모드) | 완료 |
+| 5 | `BeanPostProcessor`, `@Log` + JDK 동적 프록시 AOP | 완료 |
 
 ## 지원 기능
 
@@ -25,23 +26,40 @@ JDK 21 기준, 애노테이션 기반 **싱글톤** 빈 관리에 집중합니�
 | `@PostConstruct` | 주입 완료 후 초기화 |
 | `@Configuration` | 설정 클래스 (`@Component` 메타) |
 | `@Bean` / `@Bean("name")` | 팩토리 메서드로 빈 등록 |
+| `@Log` | 타입/메서드에 붙이면 JDK 프록시로 호출 로그 |
+
+### 확장 포인트
+
+| 타입 | 역할 |
+| --- | --- |
+| `BeanPostProcessor` | 초기화 전후 훅 (`before` / `after`) |
+| `LoggingBeanPostProcessor` | `@Log` 대상에 JDK Proxy 적용 |
+| `PrintBeanPostProcessor` | 생성 파이프라인 디버그 출력 |
 
 ### 컨테이너 흐름
 
 ```text
 scan / register
-  → @Component  → BeanDefinition (생성자 방식)
-  → @Configuration → 설정 클래스 + @Bean 메서드 정의 등록
+  → @Component       → BeanDefinition (생성자 방식)
+  → @Configuration   → 설정 클래스 + @Bean 메서드 정의
 
-refresh / getBean
-  → [일반] createInstance → 필드/세터 주입 → @PostConstruct
-  → [@Bean] Configuration 인스턴스 → 메서드 파라미터 주입 → method.invoke
+refresh
+  → BeanPostProcessor 빈을 먼저 생성·수집
+  → 나머지 싱글톤 eager 생성
+
+getBean / 생성
+  → [일반] createInstance → 필드/세터 주입
+  → [@Bean] Configuration 인스턴스 → 파라미터 주입 → method.invoke
+  → BeanPostProcessor.before
+  → @PostConstruct
+  → BeanPostProcessor.after   ← 프록시 교체 가능
   → 싱글톤 캐시 저장
 ```
 
-- `new ApplicationContext(AppConfig.class)` → `scan` + `refresh`까지 수행
-- 실제 생성 엔진은 `getBean`, `refresh`는 등록된 싱글톤을 eager 생성
+- `new ApplicationContext(AppConfig.class)` → `scan` + `refresh`
+- 실제 생성 엔진은 `getBean`
 - 생성 중 순환 의존성은 `currentlyCreating`으로 감지 후 예외
+- `getBean(Class)`는 **요청한 타입**으로 cast (프록시를 인터페이스로 조회 가능)
 
 ## 패키지 구조
 
@@ -49,14 +67,18 @@ refresh / getBean
 src/io/summer
   annotation/
     Component, ComponentScan, Inject, Qualifier
-    PostConstruct, Configuration, Bean
+    PostConstruct, Configuration, Bean, Log
   core/
-    ApplicationContext    # 진입점
-    DefaultBeanFactory    # 정의·싱글톤·@Bean 팩토리·순환 감지
-    Injector              # 생성자·필드·세터·PostConstruct
-    ClassPathScanner      # classpath 스캔
-    BeanDefinition        # 일반 / 팩토리 메서드 정의
+    ApplicationContext     # 진입점
+    DefaultBeanFactory     # 정의·싱글톤·@Bean·BPP·순환 감지
+    Injector               # 생성자·필드·세터·PostConstruct
+    ClassPathScanner
+    BeanDefinition
+    BeanPostProcessor
     *Exception
+  aop/
+    LoggingBeanPostProcessor
+    PrintBeanPostProcessor
 ```
 
 ## 빠른 시작
@@ -97,29 +119,9 @@ public class NoticeService {
 
 ### `@Configuration` + `@Bean` 방식
 
-`@Component`가 없는 타입도 팩토리 메서드로 등록할 수 있습니다.
-
 ```java
-public class Clock {
-    public long now() {
-        return System.currentTimeMillis();
-    }
-}
-
-public class GreetingClient {
-    private final Clock clock;
-
-    public GreetingClient(Clock clock) {
-        this.clock = clock;
-    }
-
-    public String hello(String name) {
-        return "hello " + name + " @ " + clock.now();
-    }
-}
-
 @Configuration
-@ComponentScan("com.example.demo")
+@ComponentScan("io.summer.demo")
 public class AppConfig {
 
     @Bean
@@ -131,17 +133,53 @@ public class AppConfig {
     public GreetingClient greetingClient(Clock clock) {
         return new GreetingClient(clock);
     }
+
+    // BPP는 데모 스캔 범위 밖이면 @Bean으로 등록
+    @Bean
+    public LoggingBeanPostProcessor loggingBeanPostProcessor() {
+        return new LoggingBeanPostProcessor();
+    }
 }
 ```
 
-### 실행
+### AOP (`@Log` + JDK Proxy)
+
+인터페이스 + 구현체 구조가 필요합니다. (JDK Proxy 제약)
+
+```java
+public interface AOPService {
+    void run();
+}
+
+@Component
+@Log
+public class AOPServiceImpl implements AOPService {
+    @Override
+    public void run() {
+        System.out.println("running");
+    }
+}
+```
 
 ```java
 ApplicationContext ctx = new ApplicationContext(AppConfig.class);
 
-NoticeService notice = ctx.getBean(NoticeService.class);
-GreetingClient client = ctx.getBean("greetingClient", GreetingClient.class);
-Clock clock = ctx.getBean(Clock.class);
+// ✅ 프록시는 인터페이스로 조회
+AOPService service = ctx.getBean(AOPService.class);
+service.run();
+
+// ❌ 구현체로 조회하면 ClassCastException
+// ctx.getBean(AOPServiceImpl.class);
+```
+
+기대 출력 예:
+
+```text
+[BPP:before] aOPServiceImpl : AOPServiceImpl
+[BPP:after]  aOPServiceImpl : $Proxy...
+[LOG] → aOPServiceImpl.run
+running
+[LOG] ← aOPServiceImpl.run
 ```
 
 ### 수동 등록
@@ -161,9 +199,17 @@ ctx.refresh();
 동일 타입 빈이 2개 이상이면 `getBean(Type.class)`는 `NoUniqueBeanException`을 던집니다.  
 `@Qualifier` 또는 `getBean(name, type)`을 사용하세요.
 
+## Phase 5 참고
+
+- `BeanPostProcessor`는 `refresh` 시 다른 빈보다 **먼저** 생성·수집됩니다.
+- BPP 자신이 다른 빈에 의존하면, 그 빈은 BPP 목록이 비어 있는 채 만들어질 수 있습니다. (의존 최소화)
+- `@Log`는 **구현 클래스**(또는 구현 메서드)에 붙입니다. 인터페이스만 붙이면 프록시가 안 만들어집니다.
+- 데모 패키지만 스캔할 경우 `io.summer.aop`의 BPP는 `@Bean`/`register`로 따로 등록하세요.
+
 ## 아직 없는 기능
 
-- `BeanPostProcessor` / AOP / 프록시 (`@Configuration` full 모드 포함)
+- CGLIB / `@Configuration` full 모드 (같은 설정 클래스 내부 `@Bean` 호출 가로채기)
+- 포인트컷 표현식, Advisor 체인
 - `@Value` / 프로퍼티
 - Prototype scope
 - `@Import`

@@ -13,6 +13,7 @@ public class DefaultBeanFactory {
     private final Map<String, Object> singletons = new ConcurrentHashMap<>();
     private final Injector injector;
     private final Set<String> currentlyCreating = ConcurrentHashMap.newKeySet();
+    private final List<BeanPostProcessor> beanPostProcessors = new ArrayList<>();
 
     public DefaultBeanFactory(Injector injector) {
         this.injector = injector;
@@ -31,6 +32,15 @@ public class DefaultBeanFactory {
         }
     }
     public void instantiateSingletons() {
+        // 1) BPP 먼저
+        for (BeanDefinition definition : definitions.values()) {
+            if (BeanPostProcessor.class.isAssignableFrom(definition.getBeanClass())) {
+                BeanPostProcessor bpp = (BeanPostProcessor) getBean(
+                        definition.getName(), definition.getBeanClass());
+                beanPostProcessors.add(bpp);
+            }
+        }
+        // 2) 나머지
         for (BeanDefinition definition : definitions.values()) {
             getBean(definition.getName(), definition.getBeanClass());
         }
@@ -47,7 +57,7 @@ public class DefaultBeanFactory {
             throw new NoUniqueBeanException(type, matched.size());
         }
         BeanDefinition def = matched.get(0);
-        return (T) getBean(def.getName(), def.getBeanClass());
+        return getBean(def.getName(), type);  // def.getBeanClass() 말고 type
     }
     @SuppressWarnings("unchecked")
     public <T> T getBean(String name, Class<T> type) {
@@ -72,9 +82,15 @@ public class DefaultBeanFactory {
             Object instance;
             if (definition.isFactoryBean()) {
                 instance = createFromFactory(definition);
+                // @Bean 결과에도 BPP 적용 (필드 주입은 보통 생략)
             } else {
                 instance = injector.createInstance(definition.getBeanClass());
                 injector.injectFieldsAndSetters(instance);
+            }
+            // BPP 자신은 자기 목록에 넣기 전이라 initialize만 / 또는 BPP는 훅 스킵
+            if (!(instance instanceof BeanPostProcessor)) {
+                instance = initializeBean(name, instance);
+            } else {
                 injector.invokePostConstruct(instance);
             }
             singletons.put(name, instance);
@@ -152,5 +168,28 @@ public class DefaultBeanFactory {
         } catch (Exception e) {
             throw new BeanCreationException(definition.getBeanClass(), e);
         }
+    }
+
+    private Object initializeBean(String beanName, Object instance) {
+        // 1) before
+        Object wrapped = instance;
+        for (BeanPostProcessor bpp : beanPostProcessors) {
+            wrapped = bpp.postProcessBeforeInitialization(wrapped, beanName);
+            if (wrapped == null) {
+                throw new BeanCreationException(instance.getClass(),
+                        new IllegalStateException("BPP returned null (before): " + bpp));
+            }
+        }
+        // 2) @PostConstruct
+        injector.invokePostConstruct(wrapped);
+        // 3) after (프록시 교체 지점)
+        for (BeanPostProcessor bpp : beanPostProcessors) {
+            wrapped = bpp.postProcessAfterInitialization(wrapped, beanName);
+            if (wrapped == null) {
+                throw new BeanCreationException(instance.getClass(),
+                        new IllegalStateException("BPP returned null (after): " + bpp));
+            }
+        }
+        return wrapped;
     }
 }
