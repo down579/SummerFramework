@@ -1,8 +1,10 @@
 package io.summer.core;
 
 import io.summer.annotation.Component;
+import io.summer.annotation.Configuration;
 
 import java.io.File;
+import java.lang.reflect.Modifier;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Enumeration;
@@ -41,12 +43,18 @@ public class ClassPathScanner {
                 String className = packageName + "." +
                         file.getName().substring(0, file.getName().length() - 6);
                 Class<?> clazz = Class.forName(className);
-                if (clazz.isAnnotationPresent(Component.class)
-                        && !clazz.isInterface()
-                        && !java.lang.reflect.Modifier.isAbstract(clazz.getModifiers())) {
+                if (isCandidate(clazz)) {
                     out.add(clazz);
                 }
             }
         }
+    }
+
+    private boolean isCandidate(Class<?> clazz) {
+        if (clazz.isInterface() || Modifier.isAbstract(clazz.getModifiers())) {
+            return false;
+        }
+        return clazz.isAnnotationPresent(Component.class)
+                || clazz.isAnnotationPresent(Configuration.class);
     }
 }

@@ -49,7 +49,7 @@ public class Injector {
         throw new BeanCreationException(beanClass,
                 new IllegalStateException("Mark one constructor with @Inject"));
     }
-    private Object[] resolveArguments(Executable executable) {
+    public Object[] resolveArguments(Executable executable) {
         Class<?>[] paramTypes = executable.getParameterTypes();
         Annotation[][] paramAnns = executable.getParameterAnnotations();
         Object[] args = new Object[paramTypes.length];

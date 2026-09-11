@@ -1,6 +1,7 @@
 package io.summer.core;
 
 import io.summer.annotation.ComponentScan;
+import io.summer.annotation.Configuration;
 
 public class ApplicationContext {
     private final DefaultBeanFactory beanFactory;
@@ -27,9 +28,15 @@ public class ApplicationContext {
         }
         for (String basePackage : packages) {
             for (Class<?> beanClass : scanner.scan(basePackage)) {
-                beanFactory.register(beanClass);
+                if (beanClass.isAnnotationPresent(Configuration.class)) {
+                    beanFactory.registerConfiguration(beanClass);
+                } else {
+                    beanFactory.register(beanClass);
+                }
             }
         }
+        // AppConfig 자체에 @Bean이 있는 경우 (스캔 결과와 중복될 수 있으니 registerConfiguration 쪽에서 방어)
+        //beanFactory.registerConfiguration(configClass);
     }
     public void register(Class<?>... beanClasses) {
         beanFactory.register(beanClasses);
